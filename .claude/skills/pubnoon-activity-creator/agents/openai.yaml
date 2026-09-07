@@ -1,0 +1,4 @@
+interface:
+  display_name: "PubNoon Activity Creator"
+  short_description: "PubNoon-based Noon activity builder"
+  default_prompt: "Use $pubnoon-activity-creator to build or revise a Noon activity in this workspace using PubNoon gameplay patterns, competition-template integrations, Nolt.diy guardrails, and Noon2 question styling."
