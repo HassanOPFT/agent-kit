@@ -5,40 +5,40 @@
 ```markdown
 # <Feature> API test plan
 
-**Controller:** `com.noon.noon2.controller...`
-**Base path:** `/noon2-core/...`
+**Entry points:** `path/to/controller-or-router`
+**Base URL env:** `BASE_URL` (e.g. `http://localhost:3000`)
 **Script:** `test_<feature>.sh`
-**Auth:** default (single role from `auth/.env`)
+**Auth:** default (single token from `auth/.env` / login)
 
 ## Prerequisites
 
-- [ ] `noon2-core` running at `BASE_URL`
-- [ ] `api-test-scripts/auth/.env` (or scenario `.env`) with credentials
-- [ ] Feature flags / seeds (list here)
+- [ ] API running at `BASE_URL`
+- [ ] `api-test-scripts/auth/.env` (or scenario `.env`) with credentials / token
+- [ ] Seeds / flags (list here)
 
 ## Branch matrix
 
 | branch_id | method | path | role | setup | request summary | expected_http | body_oracle (jq) | false_pass guard |
 |-----------|--------|------|------|-------|-----------------|---------------|------------------|------------------|
-| FOO-CREATE-OK | POST | /foo | admin | live DB id | valid body | 200 | `.id != null` | FOO-CREATE-400 |
-| FOO-CREATE-400 | POST | /foo | admin | — | missing required field | 400 | — | paired with OK |
+| FOO-CREATE-OK | POST | /foo | default | live id | valid body | 200 | `.id != null` | FOO-CREATE-400 |
+| FOO-CREATE-400 | POST | /foo | default | - | missing required field | 400 | `.message != null or .error != null or .statusCode == 400` | paired with OK |
 
 ## Alignment (mutating DB)
 
 > Required before any seed/insert. Agent must get user OK.
 
-| action | sql / file | purpose |
-|--------|------------|---------|
+| action | sql / file / command | purpose |
+|--------|----------------------|---------|
 | seed | `seed/foo.sql` | ... |
 
 ## post_run verification
 
-- [ ] `noon_mysql_query "SELECT ..."` — expect ...
-- [ ] Mongo / Redis check (document command)
+- [ ] DB / cache check (document command)
+- [ ] Re-list endpoint confirms side effect
 
 ## non_api_branches
 
-- (websocket, cron, external API — manual only)
+- (websocket, cron, external webhook — manual only)
 
 ## Changelog
 
@@ -51,79 +51,85 @@
 
 `<AREA>-<VERB>-<BRANCH>`
 
-- `AREA`: short feature code (`GENRPT`, `AIB`, `KBANK`)
-- `VERB`: `CREATE`, `GET`, `PUT`, `LIST`, `ADMIN`
-- `BRANCH`: `OK`, `400`, `403`, `404`, `DENY`, `VALIDATE`, descriptive suffix
+- `AREA`: short feature code (`ITEMS`, `AUTH`, `USERS`, …)
+- `VERB`: `CREATE`, `GET`, `PATCH`, `LIST`, `DELETE`, …
+- `BRANCH`: `OK`, `400`, `403`, `404`, `DENY`, `VALIDATE`, or a short label
 
 ## lib/runner.sh API
 
-Source from scenario script:
+Copy [scripts/runner.sh](scripts/runner.sh) to `api-test-scripts/lib/runner.sh`.
 
 ```bash
 RUNNER_SH="$(cd "${SCRIPT_DIR}/../lib" && pwd)/runner.sh"
+# shellcheck source=/dev/null
 source "$RUNNER_SH"
 ```
 
 | Function | Purpose |
 |----------|---------|
-| `noon_runner_load_env` | Load `auth/.env` then scenario `.env` |
-| `noon_runner_ensure_auth` | Default: `auth.sh` → `ACCESS_TOKEN`. `NOON_AUTH_MODE=multi_role` for teacher/admin refresh |
-| `noon_runner_init_suite <slug> <title>` | Start logs under `logs/` |
-| `noon_run_case <branch_id> <name> <role> <method> <path> <json\|''> <http> [jq] [skip_env_var]` | JSON request + assertions |
-| `noon_run_get_case <branch_id> <name> <role> <path> <http> [jq] [skip_env_var]` | GET helper |
-| `noon_mysql_query "<sql>"` | Read-only docker mysql |
-| `noon_mysql_apply_seed <path>` | Requires `NOON_MYSQL_APPLY_OK=1` |
-| `noon_runner_finalize_suite` | Write JSON report; exit 1 if `FAILED>0` |
+| `api_runner_load_env` | Load `auth/.env` then scenario `.env` |
+| `api_runner_ensure_auth` | Obtain `ACCESS_TOKEN` via `auth/auth.sh` |
+| `api_runner_init_suite <slug> <title>` | Start logs under `logs/` |
+| `api_run_case <branch_id> <name> <role> <method> <path> <json\|''> <http> [jq] [skip_env_var]` | Request + assertions |
+| `api_run_get_case <branch_id> <name> <role> <path> <http> [jq] [skip_env_var]` | GET helper |
+| `api_runner_finalize_suite` | Write JSON report; exit 1 if `FAILED>0` |
 
-**Roles:** `admin`, `teacher`, `default` (ACCESS_TOKEN), `none` (no auth header).
+**Roles:** `default` (use `ACCESS_TOKEN`), `none` (no auth header). Extra named roles
+only if `auth/auth.sh` populates `ACCESS_TOKEN_<ROLE>` and the plan requires them.
 
 **Env overrides:**
 
 | Variable | Effect |
 |----------|--------|
-| `NOON_ALLOW_MULTI_HTTP=1` | Allow comma-separated expected HTTP (discouraged) |
-| `NOON_MYSQL_APPLY_OK=1` | Permit `noon_mysql_apply_seed` |
-| `MYSQL_CONTAINER` | Default `mysql` |
-| `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DB` | Docker mysql credentials |
+| `BASE_URL` | API origin (required) |
+| `API_ALLOW_MULTI_HTTP=1` | Allow comma-separated expected HTTP (discouraged) |
+| `API_AUTH_HEADER` | Default `Authorization` |
+| `API_AUTH_SCHEME` | Default `Bearer` |
 
-## Auth modes
+## Auth
 
 **Default (preferred):**
 
 ```bash
-# auth/.env: AUTH_USERNAME, AUTH_PASSWORD
-noon_runner_ensure_auth
-noon_run_case "..." "..." "admin" ...
+# auth/.env: AUTH_EMAIL / AUTH_PASSWORD or ACCESS_TOKEN=
+api_runner_ensure_auth
+api_run_case "..." "..." "default" ...
 ```
 
-**Multi-role (rare):** only when the plan needs two JWTs. Skip unauth 401/403 cases unless the user asks.
+Copy `auth/.env.example` → `auth/.env` and fill credentials (gitignored).
+Adapt [scripts/auth.sh](scripts/auth.sh) to the API’s login contract
+(e.g. `POST /auth/login` → `.accessToken`).
+
+## Workflow
+
+Default: Phase A (plan) → Phase B (script) → Phase C (validate + run) in one
+invocation. Stop after the plan only when the user asks for plan-only.
+DB seed/mutation still requires Alignment OK before applying.
 
 ## JSON log shape (per test event)
 
 ```json
 {
   "event": "test",
-  "branch_id": "GENRPT-CREATE-OK",
+  "branch_id": "ITEMS-CREATE-OK",
   "method": "POST",
-  "endpoint": "/genai-reports",
-  "role": "admin",
-  "expected_http": "200",
-  "actual_code": "200",
+  "endpoint": "/items",
+  "role": "default",
+  "expected_http": "201",
+  "actual_code": "201",
   "body_oracle": ".id != null",
-  "request_body": { "query": "...", "variables": { } },
-  "response_body": { "data": { } }
+  "request_body": { "name": "…" },
+  "response_body": { "id": "…" }
 }
 ```
 
-`request_body` and `response_body` in `*_full.json` are **parsed JSON objects** (pretty-printed with `indent=2`), not escaped strings. Non-JSON bodies (plain text/HTML) stay as strings.
+Parsed JSON bodies are objects in `*_full.json`; non-JSON stays a string.
 
 ## jq body oracles (examples)
 
 | Intent | jq filter |
-|--------|-------------|
+|--------|-----------|
 | Has id | `.id != null` |
-| Paginated | `.data != null and (.data \| length) >= 0` |
-| Error body | `.message != null` or `.error != null` |
-| Enum field | `.status == "OPEN"'` |
-
-Pass the filter as the 8th argument to `noon_run_case` (no `jq` prefix).
+| List / page | `.items != null or .data != null or (type == "array")` |
+| Error body | `.message != null or .error != null or .statusCode != null` |
+| Field value | `.status == "ACTIVE"` |
